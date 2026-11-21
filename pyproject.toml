@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hf-model-mirror"
+version = "0.1.0"
+description = "依設定檔批次下載 Hugging Face 開源模型，SHA256 相同檔案以硬連結共用"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["huggingface_hub>=0.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+hfmirror = "hfmirror.cli:main"
+
+[tool.setuptools]
+packages = ["hfmirror"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

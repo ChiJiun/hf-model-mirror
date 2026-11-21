@@ -5,6 +5,6 @@ __pycache__/
 build/
 dist/
 .venv/
-# 個人清單與鎖定檔不進版控（範例見 models.example.toml）
+# 個人清單與鎖定檔不進版控（範例見 models.example.toml）；其他檔名的清單請自行加入
 models.toml
-models.lock.json
+*.lock.json
