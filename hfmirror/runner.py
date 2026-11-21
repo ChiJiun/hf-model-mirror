@@ -50,6 +50,24 @@ def check_volume(cfg: Config) -> None:
             raise RuntimeError("磁碟卷 GUID 不符，停止（換碟後請確認並更新 settings.volume_guid）")
 
 
+def check_hardlinks(cfg: Config) -> None:
+    """開始前確認目標檔案系統支援硬連結（exFAT/FAT32 不支援），避免下載完第一個大檔才失敗。"""
+    probe = cfg.meta_dir / "hardlink-probe"
+    link = cfg.meta_dir / "hardlink-probe.link"
+    for p in (probe, link):
+        if p.exists():
+            p.unlink()  # 只刪自己建立的探測檔
+    probe.write_bytes(b"probe")
+    try:
+        os.link(probe, link)
+    except OSError as e:
+        raise RuntimeError(f"目標路徑不支援硬連結（可能是 exFAT/FAT32 或跨磁碟卷），無法去重：{e}") from e
+    finally:
+        for p in (link, probe):
+            if p.exists():
+                p.unlink()
+
+
 @contextlib.contextmanager
 def single_instance(meta: Path):
     """同一個目標路徑只允許一個下載程序；程序結束或當機時作業系統會自動釋放鎖。"""
@@ -126,6 +144,7 @@ def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_
     cfg.root.mkdir(parents=True, exist_ok=True)
     store = Store(cfg.root)
     with single_instance(cfg.meta_dir):
+        check_hardlinks(cfg)
         pause = cfg.meta_dir / "pause"
         if pause.exists():
             pause.unlink()  # 只刪自己的控制檔
@@ -141,6 +160,7 @@ def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_
                     continue
                 s = state.model(m)
                 if s["status"] == "completed":
+                    s = None  # 已完成的模型不要在之後的暫停／錯誤處理中被改寫
                     continue
                 s.update(status="verifying", completed_files=0, completed_bytes=0, error=None)
                 state.save()
@@ -189,6 +209,7 @@ def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_
                         raise Paused
                 s.update(status="completed", verified=now())
                 state.save()
+                s = None
                 log(f"[完成] {m['repo']}")
         except (Paused, KeyboardInterrupt):
             if s is not None:
@@ -251,6 +272,13 @@ def verify(cfg: Config, only: list[str] | None = None, relink: bool = False, log
     """離線驗證（不下載）。relink=True 時，先從內容庫補回缺少的硬連結。"""
     lock = load_lock(cfg)
     check_volume(cfg)
+    if relink:  # 會建立硬連結，不可與 download 同時執行
+        with single_instance(cfg.meta_dir):
+            return _verify(cfg, lock, only, True, log)
+    return _verify(cfg, lock, only, False, log)
+
+
+def _verify(cfg: Config, lock: dict, only: list[str] | None, relink: bool, log) -> int:
     store, bad = Store(cfg.root), 0
     for m in lock["models"]:
         if m["status"] != "ready" or (only and m["repo"] not in only):

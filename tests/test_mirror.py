@@ -128,3 +128,70 @@ def test_status_reports_remaining(planned, hub, capsys):
     lock = load_lock(planned)
     assert runner.remaining_bytes(planned, lock) == expected
     assert "還需下載" in out
+
+
+@pytest.mark.parametrize("line", [
+    'include = "*.gguf"',          # 字串而非陣列：以前會被拆成單字元、含 "*" → 下載整個 repo
+    'exclude = "onnx/*"',
+    'enabled = "false"',
+    'revision = 123',
+    'category = "x/../../escape"',  # 不可跳出 root
+    'category = ".."',
+    'include = [1]',
+])
+def test_config_type_errors(tmp_path, line):
+    p = tmp_path / "m.toml"
+    p.write_text(f'[settings]\nroot="out"\n[[models]]\nrepo="a/b"\n{line}\n', encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p)
+
+
+def test_settings_type_errors(tmp_path):
+    p = tmp_path / "m.toml"
+    for bad in ['reserve_gb = true', 'reserve_gb = "50"', 'root = 1', 'rooot = "x"']:
+        p.write_text(f'[settings]\n{bad}\n[[models]]\nrepo="a/b"\n', encoding="utf-8")
+        with pytest.raises(ConfigError):
+            load_config(p, root_override=None if "root" in bad and "rooot" not in bad else tmp_path)
+
+
+def test_plan_reuses_pinned_commit(make_cfg, hub):
+    cfg = make_cfg()
+    first = build_lock(cfg, hub.info, **quiet)
+    calls = []
+
+    def info(repo, **kw):
+        calls.append(repo)
+        r = hub.info(repo, **kw)
+        r.sha = "f" * 40  # 上游有新 commit
+        return r
+
+    again = build_lock(cfg, info, previous=first, **quiet)
+    assert calls == [] and again["models"] == first["models"]
+    updated = build_lock(cfg, info, previous=first, update=True, **quiet)
+    assert len(calls) == 2 and all(m["commit"] == "f" * 40 for m in updated["models"])
+
+
+def test_completed_model_not_marked_paused(planned, hub):
+    assert runner.download(planned, fetch=hub.fetch, only=["org/base"], **quiet) == 0
+    runner.request_pause(planned)
+
+    def fetch_pause(*a):
+        runner.request_pause(planned)
+        hub.fetch(*a)
+
+    # 第二次執行：base 已完成會跳過；finetune 下載第一個檔案後暫停
+    (planned.meta_dir / "pause").unlink()
+    assert runner.download(planned, fetch=fetch_pause, **quiet) == 130
+    state = json.loads((planned.meta_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["org/base"]["status"] == "completed"
+    assert state["org/finetune"]["status"] == "paused"
+
+
+def test_hardlink_unsupported_stops_early(planned, hub, monkeypatch):
+    def no_link(*a, **k):
+        raise OSError("不支援硬連結")
+
+    monkeypatch.setattr(runner.os, "link", no_link)
+    with pytest.raises(RuntimeError, match="硬連結"):
+        runner.download(planned, fetch=hub.fetch, **quiet)
+    assert hub.downloads == []

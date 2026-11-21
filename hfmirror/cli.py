@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
 import sys
 
 from . import runner
@@ -19,7 +21,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-c", "--config", default="models.toml", help="設定檔路徑（預設 models.toml）")
     ap.add_argument("--root", help="覆寫設定檔的 settings.root（目標路徑）")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("plan", help="查詢各模型固定 commit 與檔案清單，寫入鎖定檔")
+    pl = sub.add_parser("plan", help="查詢各模型固定 commit 與檔案清單，寫入鎖定檔")
+    pl.add_argument("--update", action="store_true", help="所有模型都重新查詢最新 commit（預設沿用鎖定檔中設定沒變的模型）")
     d = sub.add_parser("download", help="依鎖定檔下載（可中斷後重跑接續）")
     d.add_argument("--model", action="append", help="只處理指定 repo，可重複")
     sub.add_parser("status", help="顯示進度與去重後剩餘下載量")
@@ -31,7 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config(a.config, a.root)
         if a.cmd == "plan":
-            lock = build_lock(cfg)
+            previous = json.loads(cfg.lock_file.read_text(encoding="utf-8")) if cfg.lock_file.is_file() else None
+            lock = build_lock(cfg, previous=previous, update=a.update)
             write_json(cfg.lock_file, lock)
             print(f"已寫入 {cfg.lock_file}")
             return 0
@@ -45,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.cmd == "verify":
             return runner.verify(cfg, a.model, a.relink)
-    except (ConfigError, FileNotFoundError, ValueError, RuntimeError) as e:
+    except (ConfigError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as e:
         print(f"錯誤：{e}", file=sys.stderr)
         return 2
     return 0

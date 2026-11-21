@@ -62,14 +62,24 @@ def fetch_model(spec: ModelSpec, info_fn: Callable[..., Any]) -> dict:
     return {"commit": info.sha, "files": files}
 
 
-def build_lock(cfg: Config, info_fn: Callable[..., Any] | None = None, log=print) -> dict:
+def build_lock(cfg: Config, info_fn: Callable[..., Any] | None = None, log=print,
+               previous: dict | None = None, update: bool = False) -> dict:
+    """previous：既有鎖定檔。設定沒變且之前查詢成功的模型沿用原本的 commit，除非 update=True。"""
     if info_fn is None:
         from huggingface_hub import HfApi
 
         info_fn = HfApi().model_info
+    old = {}
+    if previous and previous.get("version") == LOCK_VERSION and not update:
+        old = {m["repo"]: m for m in previous.get("models", []) if m.get("status") == "ready"}
     models = []
     for spec in cfg.models:
         entry = {**spec_key(spec)}
+        prev = old.get(spec.repo)
+        if prev and {k: prev.get(k) for k in entry} == entry:
+            models.append(prev)
+            log(f"[沿用] {spec.repo}@{prev['commit'][:12]}（要更新到最新版請用 plan --update）")
+            continue
         if not spec.enabled:
             entry.update(status="disabled", files=[])
         else:
