@@ -36,8 +36,9 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "plan":
             previous = json.loads(cfg.lock_file.read_text(encoding="utf-8")) if cfg.lock_file.is_file() else None
             if previous and previous.get("config") and previous["config"] != str(cfg.path):
-                raise ValueError(f"{cfg.lock_file} 屬於另一個設定檔（{previous['config']}），不覆蓋；"
-                                 "請在 [settings] 設定不同的 lock_file")
+                raise ValueError(f"{cfg.lock_file} 屬於另一個設定檔（{previous['config']}），不覆蓋。"
+                                 "兩份清單請在 [settings] 設定不同的 lock_file；"
+                                 "如果只是搬動或改名了設定檔，確認後把鎖定檔裡的 config 欄位改成目前路徑即可保留已固定的 commit")
             lock = build_lock(cfg, previous=previous, update=a.update)
             write_json(cfg.lock_file, lock)
             print(f"已寫入 {cfg.lock_file}")

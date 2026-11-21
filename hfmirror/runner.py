@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -111,18 +113,28 @@ def single_instance(meta: Path):
         handle.close()
 
 
+def files_fingerprint(m: dict) -> str:
+    items = sorted((f["path"], f["size"], f["sha256"] or f["git_sha1"]) for f in m["files"])
+    return hashlib.sha256(json.dumps(items).encode()).hexdigest()
+
+
+def is_current(s: dict, m: dict) -> bool:
+    return s.get("commit") == m.get("commit") and s.get("files_fingerprint") == files_fingerprint(m)
+
+
 class State:
     def __init__(self, cfg: Config):
         self.path = cfg.meta_dir / "state.json"
         self.md = cfg.meta_dir / "PROGRESS.md"
-        import json
-
         self.data: dict = json.loads(self.path.read_text(encoding="utf-8")) if self.path.is_file() else {}
 
     def model(self, m: dict) -> dict:
+        """commit 或檔案清單（include/exclude 改變）不同時，進度歸零並重新校驗。"""
         s = self.data.get(m["repo"])
-        if not s or s.get("commit") != m.get("commit"):
-            s = {"commit": m.get("commit"), "status": "pending", "completed_files": 0, "completed_bytes": 0}
+        fp = files_fingerprint(m)
+        if not s or s.get("commit") != m.get("commit") or s.get("files_fingerprint") != fp:
+            s = {"commit": m.get("commit"), "files_fingerprint": fp, "status": "pending",
+                 "completed_files": 0, "completed_bytes": 0}
             self.data[m["repo"]] = s
         s["total_bytes"] = sum(f["size"] for f in m["files"])
         s["total_files"] = len(m["files"])
@@ -271,8 +283,9 @@ def status(cfg: Config, log=print) -> int:
         if m["status"] != "ready":
             log(f"{m['repo']}：{m['status']} {m.get('reason', '')}")
             continue
-        done = s.get("completed_bytes", 0) if s.get("commit") == m["commit"] else 0
-        st = s.get("status", "pending") if s.get("commit") == m["commit"] else "pending"
+        current = is_current(s, m)
+        done = s.get("completed_bytes", 0) if current else 0
+        st = s.get("status", "pending") if current else "pending"
         cur = f"，目前 {s['current_file']}" if st == "downloading" and s.get("current_file") else ""
         err = f"，錯誤：{s['error']}" if s.get("error") else ""
         log(f"{m['repo']}：{st} {human(done)}/{human(total)}{cur}{err}")

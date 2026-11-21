@@ -254,3 +254,30 @@ def test_permanent_error_not_retried(planned, monkeypatch):
 
     assert runner.download(planned, fetch=fetch, **quiet) == 1
     assert len(calls) == 1
+
+
+def test_include_change_downloads_new_files(tmp_path, hub):
+    """改了 include 之後重跑 plan + download，必須下載新增的檔案（不能因為 state 是 completed 就跳過）。"""
+    p = tmp_path / "models.toml"
+    body = '[settings]\nroot="out"\nreserve_gb=0\n[[models]]\nrepo="org/base"\ninclude=[{inc}]\n'
+    p.write_text(body.format(inc='"config.json"'), encoding="utf-8")
+    cfg = load_config(p)
+    write_json(cfg.lock_file, build_lock(cfg, hub.info, **quiet))
+    assert runner.download(cfg, fetch=hub.fetch, **quiet) == 0
+    assert hub.downloads == [("org/base", "config.json")]
+    p.write_text(body.format(inc='"config.json", "*.safetensors"'), encoding="utf-8")
+    cfg = load_config(p)
+    prev = json.loads(cfg.lock_file.read_text(encoding="utf-8"))
+    write_json(cfg.lock_file, build_lock(cfg, hub.info, previous=prev, **quiet))
+    assert runner.download(cfg, fetch=hub.fetch, **quiet) == 0
+    assert ("org/base", "model.safetensors") in hub.downloads
+    assert runner.verify(cfg, **quiet) == 0
+
+
+@pytest.mark.parametrize("line", ['root = "  "', 'volume_guid = ""', 'lock_file = ""', 'lock_file = "sub/"'])
+def test_empty_settings_rejected(tmp_path, line):
+    p = tmp_path / "m.toml"
+    extra = '' if line.startswith("root") else 'root = "out"\n'
+    p.write_text(f'[settings]\n{extra}{line}\n[[models]]\nrepo="a/b"\n', encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p)

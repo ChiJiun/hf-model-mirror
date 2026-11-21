@@ -73,8 +73,8 @@ def load_config(path: str | Path, root_override: str | Path | None = None) -> Co
     if unknown:
         raise ConfigError(f"[settings] 有不認得的欄位：{sorted(unknown)}")
     root = root_override or _typed(settings, "root", str, "", "[settings]")
-    if not root:
-        raise ConfigError("settings.root（目標路徑）未設定，也沒有用 --root 指定")
+    if not str(root).strip():
+        raise ConfigError("settings.root（目標路徑）未設定或是空白，也沒有用 --root 指定")
     root = Path(root).expanduser()
     if not root.is_absolute():
         # --root 的相對路徑以目前工作目錄為準；設定檔裡的相對路徑以設定檔所在資料夾為準
@@ -82,8 +82,13 @@ def load_config(path: str | Path, root_override: str | Path | None = None) -> Co
     volume_guid = settings.get("volume_guid")
     if volume_guid is not None:
         _typed(settings, "volume_guid", str, None, "[settings]")
+        if not volume_guid.strip():
+            raise ConfigError("settings.volume_guid 不可為空字串（不需要磁碟檢查就整行刪掉）")
     # 預設每個設定檔有自己的鎖定檔：models.toml → models.lock.json、llm.toml → llm.lock.json
-    lock = Path(_typed(settings, "lock_file", str, f"{path.stem}.lock.json", "[settings]"))
+    lock_raw = _typed(settings, "lock_file", str, f"{path.stem}.lock.json", "[settings]")
+    if not lock_raw.strip() or lock_raw.endswith(("/", "\\")) or Path(lock_raw).name in ("", ".", ".."):
+        raise ConfigError(f"settings.lock_file 必須是檔案路徑：{lock_raw!r}")
+    lock = Path(lock_raw)
     if not lock.is_absolute():
         lock = path.parent / lock
 
