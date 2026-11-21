@@ -5,7 +5,8 @@ import pytest
 
 from hfmirror import runner
 from hfmirror.config import ConfigError, load_config
-from hfmirror.plan import build_lock, load_lock, select, write_json
+from hfmirror.cli import main
+from hfmirror.plan import build_lock, load_lock, safe_relpath, select, write_json
 
 quiet = dict(log=lambda *a: None)
 
@@ -91,7 +92,9 @@ def test_blocked_repo_is_skipped(make_cfg, hub):
     lock = build_lock(cfg, hub.info, **quiet)
     assert [m["status"] for m in lock["models"]] == ["ready", "blocked"]
     write_json(cfg.lock_file, lock)
-    assert runner.download(cfg, fetch=hub.fetch, **quiet) == 0
+    logs = []
+    assert runner.download(cfg, fetch=hub.fetch, log=logs.append) == 3  # 其他完成但有略過
+    assert any("gated/model" in line for line in logs[-2:])
 
 
 def test_config_change_requires_replan(planned, tmp_path):
@@ -332,3 +335,110 @@ def test_revision_blank_rejected(tmp_path):
     p.write_text('[settings]\nroot="x"\n[[models]]\nrepo="a/b"\nrevision="  "\n', encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(p)
+
+
+def _toml_str(s: str) -> str:
+    return json.dumps(s)  # JSON 字串跳脫（含 \u0001）也是合法的 TOML 基本字串
+
+
+def _toml_with(model_lines: str) -> str:
+    return '[settings]\nroot="x"\n[[models]]\n' + model_lines
+
+
+@pytest.mark.parametrize("name", ["CON", "con", "NUL.txt", "Com1", "lpt9.tar.gz", "aux ", "name.", "a\x01b", "x\x1f"])
+def test_windows_bad_names_rejected(tmp_path, name):
+    p = tmp_path / "m.toml"
+    p.write_text(_toml_with(f'repo="a/b"\ncategory={_toml_str(name)}\n'), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p)
+    p.write_text(_toml_with(f'repo={_toml_str(name + "/b")}\n'), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p)
+
+
+def test_safe_relpath_rejects_bad_segments():
+    for bad in ["CON", "sub/nul.txt", "a/COM3.bin", "dir./f", "f.", "a/b ", "a/\x07b"]:
+        with pytest.raises(ValueError):
+            safe_relpath(bad)
+    assert safe_relpath("sub/console.txt") == "sub/console.txt"  # console 不是保留名稱
+    assert safe_relpath("com10.txt") == "com10.txt"
+
+
+def test_bad_hf_filename_marks_model_blocked(make_cfg, hub):
+    hub.repos["org/base"]["nul.txt"] = b"x"
+    lock = build_lock(make_cfg(), hub.info, **quiet)
+    base = lock["models"][0]
+    assert base["status"] == "blocked" and "nul.txt" in base["reason"]
+    assert lock["models"][1]["status"] == "ready"
+
+
+def test_duplicate_repo_case_insensitive(tmp_path):
+    p = tmp_path / "m.toml"
+    p.write_text(_toml_with('repo="a/b"\n') + '[[models]]\nrepo="A/B"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="重複"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("rev", [" main", "main ", "\tmain"])
+def test_revision_surrounding_space_rejected(tmp_path, rev):
+    p = tmp_path / "m.toml"
+    p.write_text(_toml_with(f'repo="a/b"\nrevision={_toml_str(rev)}\n'), encoding="utf-8")
+    with pytest.raises(ConfigError, match="空白"):
+        load_config(p)
+
+
+def test_download_exit_code_0_without_skips(planned, hub):
+    assert runner.download(planned, fetch=hub.fetch, **quiet) == 0
+
+
+def test_pause_exit_code_still_130(planned, hub):
+    runner.request_pause(planned)
+
+    def fetch(*a, **k):
+        runner.request_pause(planned)  # 下載中要求暫停
+        return hub.fetch(*a, **k)
+
+    # download 開頭會清掉舊的 pause 檔，所以在 fetch 內才要求暫停
+    assert runner.download(planned, fetch=fetch, **quiet) == 130
+
+
+def _edit_lock(cfg, fn):
+    lock = json.loads(cfg.lock_file.read_text(encoding="utf-8"))
+    fn(lock)
+    cfg.lock_file.write_text(json.dumps(lock), encoding="utf-8")
+
+
+@pytest.mark.parametrize("edit", [
+    lambda l: l["models"][0].pop("files"),
+    lambda l: l["models"][0].pop("commit"),
+    lambda l: l["models"][0]["files"][0].pop("size"),
+    lambda l: l["models"][0]["files"][0].update(size="12"),
+    lambda l: l["models"][0]["files"][0].update(path=5),
+    lambda l: l["models"][0]["files"][0].update(sha256=123),
+    lambda l: l["models"][0].update(files="oops"),
+    lambda l: l.update(models={"a": 1}),
+    lambda l: l["models"].__setitem__(0, "x"),
+])
+def test_corrupt_lock_gives_clear_error(planned, edit):
+    _edit_lock(planned, edit)
+    with pytest.raises(ValueError, match="plan"):
+        load_lock(planned)
+
+
+def test_cli_corrupt_lock_no_traceback(planned, capsys):
+    _edit_lock(planned, lambda l: l["models"][0]["files"][0].pop("size"))
+    assert main(["-c", str(planned.path), "status"]) == 2
+    err = capsys.readouterr().err
+    assert "hfmirror plan" in err and "Traceback" not in err
+    planned.lock_file.write_text("{ not json", encoding="utf-8")
+    assert main(["-c", str(planned.path), "download"]) == 2
+    err = capsys.readouterr().err
+    assert "hfmirror plan" in err and "Traceback" not in err
+
+
+def test_plan_recovers_from_corrupt_lock(planned, hub, monkeypatch, capsys):
+    planned.lock_file.write_text("{ not json", encoding="utf-8")
+    monkeypatch.setattr("hfmirror.cli.build_lock", lambda cfg, previous=None, update=False: build_lock(cfg, hub.info, previous=previous, update=update, **quiet))
+    assert main(["-c", str(planned.path), "plan"]) == 0
+    assert "警告" in capsys.readouterr().err
+    load_lock(planned)  # 重新產生的鎖定檔是有效的

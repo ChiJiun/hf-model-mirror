@@ -191,6 +191,7 @@ def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_
             pause.unlink()  # 只刪自己的控制檔
         state = State(cfg)
         s: dict | None = None
+        skipped: list[tuple[str, str]] = []
         try:
             for m in lock["models"]:
                 if only and m["repo"] not in only:
@@ -198,6 +199,7 @@ def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_
                 if m["status"] != "ready":
                     if m["status"] == "blocked":
                         log(f"[略過] {m['repo']}：{m.get('reason', '')}")
+                        skipped.append((m["repo"], m.get("reason", "")))
                     continue
                 s = state.model(m)
                 if s["status"] == "completed":
@@ -268,6 +270,11 @@ def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_
                 state.save()
             log(f"[錯誤] {e}")
             return 1
+    if skipped:
+        log(f"其他模型已完成，但有 {len(skipped)} 個模型被略過（blocked）：")
+        for repo, reason in skipped:
+            log(f"  - {repo}：{reason}")
+        return 3
     return 0
 
 

@@ -29,6 +29,7 @@ hfmirror download    # 開始下載（Ctrl+C 或 hfmirror pause 可停止，重�
 hfmirror verify      # 離線重新校驗（不下載）
 ```
 
+- 結束碼（exit code）：`0` 全部完成；`1` 下載或校驗出錯（已停止並保留檔案）；`2` 設定檔、鎖定檔或參數錯誤；`3` 其他模型都完成，但有模型被略過（`plan` 時標為 blocked，例如需授權的 repo）；`130` 暫停或 Ctrl+C。
 - 其他設定檔：`hfmirror -c D:\lists\llm.toml plan`
 - 臨時換路徑：`hfmirror --root F:\models download`（相對路徑以目前工作目錄為準）
 - 同一個資料夾可以放多份清單（例如 `llm.toml`、`embed.toml`），各自產生 `llm.lock.json`、`embed.lock.json`，互不影響。
