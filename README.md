@@ -23,14 +23,16 @@ hf auth login      # 選填：下載需要授權的模型時才需要
 
 ```powershell
 copy models.example.toml models.toml   # 改成自己的清單與路徑
-hfmirror plan        # 查詢 commit 與檔案清單，寫入 models.lock.json
+hfmirror plan        # 查詢 commit 與檔案清單，寫入 models.lock.json（每個設定檔各有一份 <檔名>.lock.json）
 hfmirror status      # 看各模型大小、去重後還要下載多少
 hfmirror download    # 開始下載（Ctrl+C 或 hfmirror pause 可停止，重跑即接續）
 hfmirror verify      # 離線重新校驗（不下載）
 ```
 
 - 其他設定檔：`hfmirror -c D:\lists\llm.toml plan`
-- 臨時換路徑：`hfmirror --root F:\models download`
+- 臨時換路徑：`hfmirror --root F:\models download`（相對路徑以目前工作目錄為準）
+- 同一個資料夾可以放多份清單（例如 `llm.toml`、`embed.toml`），各自產生 `llm.lock.json`、`embed.lock.json`，互不影響。
+- 設定檔的區塊名稱或欄位打錯（例如 `[[model]]`），會直接報錯；`--model` 指定清單裡沒有的 repo 也會報錯。
 - 只處理某個模型：`hfmirror download --model BAAI/bge-m3`
 - 改了清單（新增、刪除模型，或改 `revision`、`include`、`exclude`、`enabled`、`category`）之後要重跑 `plan`；沒重跑的話，`download` 會提醒你。
 - 重跑 `plan` 時，設定沒變的模型會沿用已固定的 commit，不會因為上游更新而重新下載。要全部更新到最新版，請用 `hfmirror plan --update`。

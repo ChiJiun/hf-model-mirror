@@ -21,6 +21,19 @@ class Paused(Exception):
     pass
 
 
+# huggingface_hub 的永久性錯誤（權限、找不到 repo/檔案/版本）：重試也不會成功
+PERMANENT_ERRORS = {"RepositoryNotFoundError", "GatedRepoError", "EntryNotFoundError",
+                    "RemoteEntryNotFoundError", "RevisionNotFoundError", "DisabledRepoError"}
+
+
+def check_only(lock: dict, only: list[str] | None) -> None:
+    if only:
+        known = {m["repo"] for m in lock["models"]}
+        missing = [r for r in only if r not in known]
+        if missing:
+            raise ValueError(f"--model 指定的 repo 不在清單中：{missing}")
+
+
 def hf_download(repo: str, path: str, commit: str, model_dir: Path) -> None:
     """預設下載器：huggingface_hub 會把未完成檔放在 <model_dir>/.cache/huggingface/download，可續傳。"""
     from huggingface_hub import hf_hub_download
@@ -140,6 +153,7 @@ def request_pause(cfg: Config) -> None:
 def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_download,
              retries: int = 5, log=print) -> int:
     lock = load_lock(cfg)
+    check_only(lock, only)
     check_volume(cfg)
     cfg.root.mkdir(parents=True, exist_ok=True)
     store = Store(cfg.root)
@@ -187,6 +201,8 @@ def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_
                             except KeyboardInterrupt:
                                 raise
                             except Exception as e:
+                                if type(e).__name__ in PERMANENT_ERRORS:
+                                    raise RuntimeError(f"無法下載（不重試）：{type(e).__name__}: {e}") from e
                                 if attempt == retries - 1:
                                     raise RuntimeError(f"重試 {retries} 次仍失敗：{e}") from e
                                 wait = min(2 ** (attempt + 1), 60)
@@ -271,6 +287,7 @@ def status(cfg: Config, log=print) -> int:
 def verify(cfg: Config, only: list[str] | None = None, relink: bool = False, log=print) -> int:
     """離線驗證（不下載）。relink=True 時，先從內容庫補回缺少的硬連結。"""
     lock = load_lock(cfg)
+    check_only(lock, only)
     check_volume(cfg)
     if relink:  # 會建立硬連結，不可與 download 同時執行
         with single_instance(cfg.meta_dir):

@@ -195,3 +195,62 @@ def test_hardlink_unsupported_stops_early(planned, hub, monkeypatch):
     with pytest.raises(RuntimeError, match="硬連結"):
         runner.download(planned, fetch=hub.fetch, **quiet)
     assert hub.downloads == []
+
+
+@pytest.mark.parametrize("text", [
+    '[settings]\nroot="out"\n[[model]]\nrepo="a/b"\n[[models]]\nrepo="c/d"\n',  # [[model]] 少 s
+    '[setting]\nreserve_gb=999\n[[models]]\nrepo="a/b"\n',
+    '[settings]\nroot="out"\nreserve_gb=inf\n[[models]]\nrepo="a/b"\n',
+])
+def test_top_level_typos_and_inf(tmp_path, text):
+    p = tmp_path / "m.toml"
+    p.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p, root_override=tmp_path)
+
+
+def test_each_config_has_own_lock(tmp_path, hub):
+    from hfmirror import cli
+
+    for name, repo in (("a", "org/base"), ("b", "org/finetune")):
+        (tmp_path / f"{name}.toml").write_text(f'[settings]\nroot="out"\nreserve_gb=0\n[[models]]\nrepo="{repo}"\n', encoding="utf-8")
+    a, b = load_config(tmp_path / "a.toml"), load_config(tmp_path / "b.toml")
+    assert a.lock_file.name == "a.lock.json" and b.lock_file.name == "b.lock.json"
+    for c in (a, b):
+        write_json(c.lock_file, build_lock(c, hub.info, **quiet))
+    assert load_lock(a)["models"][0]["repo"] == "org/base"
+    # 兩份設定檔明確指定同一個 lock_file 時，plan 不覆蓋別人的鎖定檔
+    (tmp_path / "c.toml").write_text('[settings]\nroot="out"\nlock_file="a.lock.json"\n[[models]]\nrepo="org/base"\n', encoding="utf-8")
+    assert cli.main(["-c", str(tmp_path / "c.toml"), "plan"]) == 2
+
+
+def test_root_override_relative_to_cwd(tmp_path, monkeypatch):
+    p = tmp_path / "cfg" / "m.toml"
+    p.parent.mkdir()
+    p.write_text('[settings]\nroot="out"\n[[models]]\nrepo="a/b"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert load_config(p).root == (tmp_path / "cfg" / "out").resolve()
+    assert load_config(p, root_override="dest").root == (tmp_path / "dest").resolve()
+
+
+def test_unknown_model_flag_errors(planned, hub):
+    with pytest.raises(ValueError, match="不在清單"):
+        runner.download(planned, only=["org/typo"], fetch=hub.fetch, **quiet)
+    with pytest.raises(ValueError, match="不在清單"):
+        runner.verify(planned, only=["org/typo"], **quiet)
+
+
+def test_permanent_error_not_retried(planned, monkeypatch):
+    monkeypatch.setattr(runner.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("不應重試")))
+
+    class GatedRepoError(Exception):
+        pass
+
+    calls = []
+
+    def fetch(*a):
+        calls.append(a)
+        raise GatedRepoError("401")
+
+    assert runner.download(planned, fetch=fetch, **quiet) == 1
+    assert len(calls) == 1

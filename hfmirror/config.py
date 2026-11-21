@@ -1,6 +1,7 @@
 """讀取 TOML 設定檔：目標路徑、保留空間與模型清單。"""
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,9 @@ def load_config(path: str | Path, root_override: str | Path | None = None) -> Co
         raise ConfigError(f"找不到設定檔：{path}（可先複製 models.example.toml）")
     with path.open("rb") as f:
         data = tomllib.load(f)
+    top_unknown = set(data) - {"settings", "models"}
+    if top_unknown:
+        raise ConfigError(f"設定檔有不認得的區塊：{sorted(top_unknown)}（只支援 [settings] 與 [[models]]，是否少打了 s？）")
     settings = data.get("settings", {})
     if not isinstance(settings, dict):
         raise ConfigError("[settings] 必須是表格")
@@ -73,11 +77,13 @@ def load_config(path: str | Path, root_override: str | Path | None = None) -> Co
         raise ConfigError("settings.root（目標路徑）未設定，也沒有用 --root 指定")
     root = Path(root).expanduser()
     if not root.is_absolute():
-        root = (path.parent / root).resolve()
+        # --root 的相對路徑以目前工作目錄為準；設定檔裡的相對路徑以設定檔所在資料夾為準
+        root = ((Path.cwd() if root_override else path.parent) / root).resolve()
     volume_guid = settings.get("volume_guid")
     if volume_guid is not None:
         _typed(settings, "volume_guid", str, None, "[settings]")
-    lock = Path(_typed(settings, "lock_file", str, "models.lock.json", "[settings]"))
+    # 預設每個設定檔有自己的鎖定檔：models.toml → models.lock.json、llm.toml → llm.lock.json
+    lock = Path(_typed(settings, "lock_file", str, f"{path.stem}.lock.json", "[settings]"))
     if not lock.is_absolute():
         lock = path.parent / lock
 
@@ -115,7 +121,7 @@ def load_config(path: str | Path, root_override: str | Path | None = None) -> Co
     if not models:
         raise ConfigError("設定檔沒有任何 [[models]]")
     reserve_gb = settings.get("reserve_gb", 50)
-    if isinstance(reserve_gb, bool) or not isinstance(reserve_gb, (int, float)) or reserve_gb < 0:
+    if isinstance(reserve_gb, bool) or not isinstance(reserve_gb, (int, float)) or not math.isfinite(reserve_gb) or reserve_gb < 0:
         raise ConfigError("settings.reserve_gb 必須是 >= 0 的數字")
     return Config(
         path=path,
