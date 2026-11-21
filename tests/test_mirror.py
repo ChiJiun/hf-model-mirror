@@ -281,3 +281,54 @@ def test_empty_settings_rejected(tmp_path, line):
     p.write_text(f'[settings]\n{extra}{line}\n[[models]]\nrepo="a/b"\n', encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(p)
+
+
+def _replan(cfg_path, hub):
+    cfg = load_config(cfg_path)
+    prev = json.loads(cfg.lock_file.read_text(encoding="utf-8"))
+    write_json(cfg.lock_file, build_lock(cfg, hub.info, previous=prev, **quiet))
+    return cfg
+
+
+def test_category_change_redownloads_to_new_dir(tmp_path, hub):
+    """改 category 後（commit 沒變）重跑，新位置必須補齊；共用的 LFS 檔從內容庫連結、不重新下載。"""
+    p = tmp_path / "models.toml"
+    body = '[settings]\nroot="out"\nreserve_gb=0\n[[models]]\nrepo="org/base"\n{cat}\n'
+    p.write_text(body.format(cat=""), encoding="utf-8")
+    cfg = load_config(p)
+    write_json(cfg.lock_file, build_lock(cfg, hub.info, **quiet))
+    assert runner.download(cfg, fetch=hub.fetch, **quiet) == 0
+    n = len(hub.downloads)
+    p.write_text(body.format(cat='category="llm"'), encoding="utf-8")
+    cfg = _replan(p, hub)
+    assert runner.download(cfg, fetch=hub.fetch, **quiet) == 0
+    assert all(p_ != "model.safetensors" and p_ != "extra.bin" for _, p_ in hub.downloads[n:])
+    assert (cfg.root / "llm").is_dir()
+    assert runner.verify(cfg, **quiet) == 0
+
+
+def test_completed_model_missing_file_is_restored(planned, hub):
+    runner.download(planned, fetch=hub.fetch, **quiet)
+    m = load_lock(planned)["models"][0]
+    f = next(f for f in m["files"] if f["path"] == "extra.bin")
+    runner.target_of(planned, m, f).unlink()
+    assert runner.verify(planned, **quiet) == 1
+    assert runner.download(planned, fetch=hub.fetch, **quiet) == 0
+    assert runner.verify(planned, **quiet) == 0
+
+
+def test_completed_model_size_mismatch_stops_and_keeps_file(planned, hub):
+    runner.download(planned, fetch=hub.fetch, **quiet)
+    m = load_lock(planned)["models"][0]
+    f = next(f for f in m["files"] if f["path"] == "extra.bin")
+    t = runner.target_of(planned, m, f)
+    t.write_bytes(b"X" * 7)
+    assert runner.download(planned, fetch=hub.fetch, **quiet) == 1
+    assert t.read_bytes() == b"X" * 7  # 不覆蓋
+
+
+def test_revision_blank_rejected(tmp_path):
+    p = tmp_path / "m.toml"
+    p.write_text('[settings]\nroot="x"\n[[models]]\nrepo="a/b"\nrevision="  "\n', encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p)

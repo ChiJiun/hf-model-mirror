@@ -120,7 +120,7 @@ def load_config(path: str | Path, root_override: str | Path | None = None) -> Co
             exclude=_typed(raw, "exclude", list, [], repo),
             enabled=_typed(raw, "enabled", bool, True, repo),
         )
-        if not spec.revision:
+        if not spec.revision.strip():
             raise ConfigError(f"{repo} 的 revision 不可為空")
         models.append(spec)
     if not models:

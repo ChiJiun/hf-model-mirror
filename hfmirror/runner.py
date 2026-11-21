@@ -118,8 +118,23 @@ def files_fingerprint(m: dict) -> str:
     return hashlib.sha256(json.dumps(items).encode()).hexdigest()
 
 
+def model_rel_dir(m: dict) -> str:
+    """模型目錄相對於 root 的路徑（例如 llm/owner--name--commit），改 category 時會不同。"""
+    return f"{m['category']}/{folder_name(m['repo'], m['commit'])}"
+
+
 def is_current(s: dict, m: dict) -> bool:
-    return s.get("commit") == m.get("commit") and s.get("files_fingerprint") == files_fingerprint(m)
+    return (s.get("commit") == m.get("commit") and s.get("files_fingerprint") == files_fingerprint(m)
+            and s.get("model_dir") == model_rel_dir(m))
+
+
+def files_present(cfg: Config, m: dict) -> bool:
+    """便宜檢查（不算 hash）：每個檔案都存在且大小等於鎖定檔記錄。"""
+    for f in m["files"]:
+        t = target_of(cfg, m, f)
+        if not t.is_file() or t.stat().st_size != f["size"]:
+            return False
+    return True
 
 
 class State:
@@ -129,12 +144,12 @@ class State:
         self.data: dict = json.loads(self.path.read_text(encoding="utf-8")) if self.path.is_file() else {}
 
     def model(self, m: dict) -> dict:
-        """commit 或檔案清單（include/exclude 改變）不同時，進度歸零並重新校驗。"""
+        """commit、檔案清單（include/exclude）或模型目錄（category）不同時，進度歸零並重新校驗。"""
         s = self.data.get(m["repo"])
         fp = files_fingerprint(m)
-        if not s or s.get("commit") != m.get("commit") or s.get("files_fingerprint") != fp:
-            s = {"commit": m.get("commit"), "files_fingerprint": fp, "status": "pending",
-                 "completed_files": 0, "completed_bytes": 0}
+        if not s or not is_current(s, m):
+            s = {"commit": m.get("commit"), "files_fingerprint": fp, "model_dir": model_rel_dir(m),
+                 "status": "pending", "completed_files": 0, "completed_bytes": 0}
             self.data[m["repo"]] = s
         s["total_bytes"] = sum(f["size"] for f in m["files"])
         s["total_files"] = len(m["files"])
@@ -186,8 +201,10 @@ def download(cfg: Config, only: list[str] | None = None, fetch: DownloadFn = hf_
                     continue
                 s = state.model(m)
                 if s["status"] == "completed":
-                    s = None  # 已完成的模型不要在之後的暫停／錯誤處理中被改寫
-                    continue
+                    if files_present(cfg, m):
+                        s = None  # 已完成的模型不要在之後的暫停／錯誤處理中被改寫
+                        continue
+                    log(f"[重查] {m['repo']}：已完成的模型有檔案缺少或大小不符，重新處理")
                 s.update(status="verifying", completed_files=0, completed_bytes=0, error=None)
                 state.save()
                 for f in m["files"]:
