@@ -36,10 +36,27 @@ class Config:
         return self.root / ".hfmirror"
 
 
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def bad_name_reason(value: str) -> str | None:
+    """Windows 不能當檔名／資料夾名的片段：回傳原因，合法則回傳 None。"""
+    if any(ord(c) < 32 for c in value):
+        return "含控制字元"
+    if value.endswith((".", " ")):
+        return "結尾是句點或空白"
+    if value.split(".")[0].rstrip().upper() in _RESERVED_NAMES:
+        return "是 Windows 保留名稱"  # CON、NUL、COM1… 連帶副檔名（CON.txt）也不行
+    return None
+
+
 def _safe_part(value: str, what: str) -> str:
     """單一路徑片段：不可含 / \\ 或 Windows 不允許的字元，也不可是 . 或 ..。"""
     if not value or value in (".", "..") or any(c in value for c in '/\\:*?"<>|') or value != value.strip():
         raise ConfigError(f"{what} 不合法：{value!r}")
+    reason = bad_name_reason(value)
+    if reason:
+        raise ConfigError(f"{what} 不合法：{value!r}（{reason}）")
     return value
 
 
@@ -109,9 +126,9 @@ def load_config(path: str | Path, root_override: str | Path | None = None) -> Co
             raise ConfigError(f"repo 格式應為 owner/name：{repo!r}")
         for p in parts:
             _safe_part(p, "repo")
-        if repo in seen:
-            raise ConfigError(f"清單中重複的 repo：{repo}")
-        seen.add(repo)
+        if repo.lower() in seen:  # Hugging Face 的 repo 名稱不分大小寫，Windows 資料夾也不分
+            raise ConfigError(f"清單中重複的 repo（不分大小寫）：{repo}")
+        seen.add(repo.lower())
         spec = ModelSpec(
             repo=repo,
             revision=_typed(raw, "revision", str, "main", repo),
@@ -122,6 +139,8 @@ def load_config(path: str | Path, root_override: str | Path | None = None) -> Co
         )
         if not spec.revision.strip():
             raise ConfigError(f"{repo} 的 revision 不可為空")
+        if spec.revision != spec.revision.strip():
+            raise ConfigError(f"{repo} 的 revision 前後有空白：{spec.revision!r}，請去掉空白")
         models.append(spec)
     if not models:
         raise ConfigError("設定檔沒有任何 [[models]]")

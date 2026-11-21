@@ -8,7 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from .config import Config, ModelSpec
+from .config import Config, ModelSpec, bad_name_reason
 
 LOCK_VERSION = 1
 
@@ -32,6 +32,10 @@ def safe_relpath(p: str) -> str:
     rel = PurePosixPath(p)
     if rel.is_absolute() or ".." in rel.parts or "\\" in p or ":" in p or not rel.parts:
         raise ValueError(f"不安全的檔案路徑：{p!r}")
+    for part in rel.parts:
+        reason = bad_name_reason(part)
+        if reason:
+            raise ValueError(f"不安全的檔案路徑：{p!r}（片段 {part!r}{reason}）")
     return p
 
 
@@ -107,10 +111,49 @@ def write_json(path: Path, data: Any) -> None:
     os.replace(tmp, path)
 
 
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def validate_lock(lock: Any) -> None:
+    """檢查鎖定檔結構（欄位與型別）；被手動改壞時 raise ValueError。"""
+    def bad(where: str) -> ValueError:
+        return ValueError(f"鎖定檔格式錯誤（{where}），請重新執行 hfmirror plan")
+
+    if not isinstance(lock, dict) or not isinstance(lock.get("models"), list):
+        raise bad("缺少 models 清單")
+    for i, m in enumerate(lock["models"], 1):
+        if not isinstance(m, dict):
+            raise bad(f"第 {i} 個模型不是物件")
+        for key in ("repo", "revision", "category", "status"):
+            if not isinstance(m.get(key), str):
+                raise bad(f"第 {i} 個模型的 {key} 缺少或型別不對")
+        if m["status"] == "ready" and not isinstance(m.get("commit"), str):
+            raise bad(f"{m['repo']} 的 commit 缺少或型別不對")
+        if not isinstance(m.get("files"), list):
+            raise bad(f"{m['repo']} 的 files 缺少或型別不對")
+        for f in m["files"]:
+            if not isinstance(f, dict) or not isinstance(f.get("path"), str) or not _is_int(f.get("size")) or f["size"] < 0:
+                raise bad(f"{m['repo']} 有檔案項目缺少 path/size 或型別不對")
+            for key in ("sha256", "git_sha1"):
+                if f.get(key) is not None and not isinstance(f[key], str):
+                    raise bad(f"{m['repo']}:{f['path']} 的 {key} 型別不對")
+
+
+def read_lock_file(path: Path) -> dict:
+    """讀鎖定檔並檢查結構；JSON 壞掉或欄位不對都 raise ValueError（訊息提示重新 plan）。"""
+    try:
+        lock = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ValueError(f"鎖定檔 {path} 不是有效的 JSON（{e}），請重新執行 hfmirror plan") from e
+    validate_lock(lock)
+    return lock
+
+
 def load_lock(cfg: Config) -> dict:
     if not cfg.lock_file.is_file():
         raise FileNotFoundError(f"找不到鎖定檔 {cfg.lock_file}，請先執行 hfmirror plan")
-    lock = json.loads(cfg.lock_file.read_text(encoding="utf-8"))
+    lock = read_lock_file(cfg.lock_file)
     if lock.get("version") != LOCK_VERSION:
         raise ValueError("鎖定檔版本不符，請重新執行 hfmirror plan")
     wanted = [spec_key(m) for m in cfg.models]

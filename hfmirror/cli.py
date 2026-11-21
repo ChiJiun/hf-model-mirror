@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 
 from . import runner
 from .config import ConfigError, load_config
-from .plan import build_lock, write_json
+from .plan import build_lock, read_lock_file, write_json
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,7 +33,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config(a.config, a.root)
         if a.cmd == "plan":
-            previous = json.loads(cfg.lock_file.read_text(encoding="utf-8")) if cfg.lock_file.is_file() else None
+            previous = None
+            if cfg.lock_file.is_file():
+                try:
+                    previous = read_lock_file(cfg.lock_file)
+                except ValueError as e:  # 舊鎖定檔壞了：plan 正是修復方式，忽略它重新查詢
+                    print(f"警告：{e}；忽略舊鎖定檔，所有模型重新查詢", file=sys.stderr)
             if previous and previous.get("config") and previous["config"] != str(cfg.path):
                 raise ValueError(f"{cfg.lock_file} 屬於另一個設定檔（{previous['config']}），不覆蓋。"
                                  "兩份清單請在 [settings] 設定不同的 lock_file；"
