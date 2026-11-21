@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+# 個人清單與鎖定檔不進版控（範例見 models.example.toml）
+models.toml
+models.lock.json
