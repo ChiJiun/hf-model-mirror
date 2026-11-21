@@ -1,0 +1,39 @@
+# 複製成 models.toml 後修改。models.toml 與 models.lock.json 已在 .gitignore，不會進版控。
+# 改完清單後執行：hfmirror plan → hfmirror download
+
+[settings]
+# 下載目標路徑（也可以用 --root 臨時覆寫）。相對路徑以本設定檔所在資料夾為準。
+root = "D:/AI-Models"
+# 每個檔案下載前，磁碟至少要留下的空間（GB）
+reserve_gb = 50
+# 鎖定檔位置（plan 產生，記錄固定 commit 與每個檔案的 SHA256）
+lock_file = "models.lock.json"
+# 選填（Windows）：目標磁碟卷 GUID，用 `mountvol D:\ /L` 查。設定後換碟或代號改變會停止，避免寫錯地方。
+# volume_guid = "\\\\?\\Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}\\"
+
+# 每個 [[models]] 是一個 Hugging Face 模型 repo，依清單順序下載。
+# 欄位：
+#   repo      必填，owner/name
+#   revision  分支、tag 或 commit，預設 main；plan 時會固定成 commit
+#   category  放在 root 底下的子資料夾，預設 models
+#   include   只下載符合的檔案（glob，比對完整路徑或檔名）；不填 = 全部
+#   exclude   排除符合的檔案
+#   enabled   false 時保留在清單但不下載
+
+[[models]]
+repo = "openai/whisper-large-v3-turbo"
+category = "speech"
+include = ["*.safetensors", "*.json", "*.txt", "LICENSE*", "README.md"]
+
+[[models]]
+repo = "BAAI/bge-m3"
+category = "embedding"
+include = ["*.safetensors", "*.json", "*.model", "LICENSE*", "README.md"]
+exclude = ["onnx/*"]
+
+[[models]]
+# GGUF 只挑一種量化：用 include 指定檔名
+repo = "ggml-org/gemma-3-1b-it-GGUF"
+category = "llm-gguf"
+include = ["*Q4_K_M.gguf", "README.md"]
+enabled = false
